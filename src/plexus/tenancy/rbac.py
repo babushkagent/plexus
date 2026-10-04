@@ -7,7 +7,7 @@ the "admin can do anything from this endpoint" class of bugs.
 
 from __future__ import annotations
 
-from ..errors import Forbidden, TenantIsolationViolation
+from ..errors import Forbidden
 from .context import TenantContext
 
 

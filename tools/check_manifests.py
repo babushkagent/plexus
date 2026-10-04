@@ -24,7 +24,7 @@ except ModuleNotFoundError:  # pragma: no cover - build-time dependency
         "check_manifests needs PyYAML: pip install -e '.[dev]'",
         file=sys.stderr,
     )
-    raise SystemExit(2)
+    raise SystemExit(2) from None
 
 ROOT = Path(__file__).resolve().parents[1]
 K8S_BASE = ROOT / "deploy" / "k8s" / "base"
@@ -71,7 +71,7 @@ def main() -> int:
             else:
                 documents(path)
                 print(f"  ok  {path.relative_to(ROOT)}")
-        except Exception as exc:  # noqa: BLE001 - report every file, then fail once
+        except Exception as exc:
             failures += 1
             print(f"  FAIL {path.relative_to(ROOT)}: {type(exc).__name__}: {exc}")
 
@@ -87,7 +87,7 @@ def main() -> int:
         ):
             try:
                 kind = yaml.safe_load(document)["kind"]
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 failures += 1
                 print(f"  FAIL render_{label}: {type(exc).__name__}: {exc}")
                 continue

@@ -18,13 +18,18 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 TRACE_VERSION = "00"
 FLAG_SAMPLED = "01"
 FLAG_NOT_SAMPLED = "00"
 
-_bindings: ContextVar[Mapping[str, str]] = ContextVar("plexus.log_bindings", default={})
+_NO_BINDINGS: Mapping[str, str] = MappingProxyType({})
+
+_bindings: ContextVar[Mapping[str, str]] = ContextVar(
+    "plexus.log_bindings", default=_NO_BINDINGS
+)
 _current_span: ContextVar[Span | None] = ContextVar("plexus.current_span", default=None)
 
 
@@ -118,7 +123,13 @@ class Tracer:
 
     @contextmanager
     def start(self, name: str, *, context: TraceContext | None = None, **attrs: Any) -> Iterator[Span]:
-        ctx = context or (_current_span.get().context.child() if _current_span.get() else TraceContext.new())
+        parent = _current_span.get()
+        if context is not None:
+            ctx = context
+        elif parent is not None:
+            ctx = parent.context.child()
+        else:
+            ctx = TraceContext.new()
         span = Span(name, ctx, time.time_ns(), dict(attrs))
         token = _current_span.set(span)
         try:
@@ -245,8 +256,8 @@ class Metrics:
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {
-                "counters": {f"{n}|{l}": v for (n, l), v in self._counters.items()},
-                "gauges": {f"{n}|{l}": v for (n, l), v in self._gauges.items()},
+                "counters": {f"{name}|{labels}": v for (name, labels), v in self._counters.items()},
+                "gauges": {f"{name}|{labels}": v for (name, labels), v in self._gauges.items()},
                 "histograms": {k: list(v) for k, v in self._histograms.items()},
             }
 
@@ -266,7 +277,7 @@ class Metrics:
                 ordered = sorted(values)
                 lines.append(f"# TYPE {base} summary")
                 for quantile in (0.5, 0.95, 0.99):
-                    idx = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * quantile))))
+                    idx = min(len(ordered) - 1, max(0, round((len(ordered) - 1) * quantile)))
                     lines.append(f"{base}_quantile{{quantile=\"{quantile}\"}} {_fmt_num(ordered[idx])}")
                 lines.append(f"{base}_count {len(ordered)}")
         return "\n".join(lines) + "\n"

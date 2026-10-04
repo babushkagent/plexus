@@ -16,6 +16,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -79,6 +80,25 @@ class Task:
             started_at_ms=row["started_at_ms"],
             finished_at_ms=row["finished_at_ms"],
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "tenant_id": self.tenant_id,
+            "type": self.type,
+            "status": self.status,
+            "payload": self.payload,
+            "result": self.result,
+            "attempts": self.attempts,
+            "max_attempts": self.max_attempts,
+            "dedupe_key": self.dedupe_key,
+            "run_after_ms": self.run_after_ms,
+            "lease_owner": self.lease_owner,
+            "last_error": self.last_error,
+            "created_at_ms": self.created_at_ms,
+            "started_at_ms": self.started_at_ms,
+            "finished_at_ms": self.finished_at_ms,
+        }
 
 
 class TaskQueue:
@@ -313,7 +333,7 @@ class TaskQueue:
         with self._db.transaction(immediate=True) as tx:
             tx.set_worker_scope(True)
             cursor = tx.execute(
-                f"UPDATE tasks SET heartbeat_at_ms = NULL WHERE status = ? AND lease_expires_at_ms < ?",
+                "UPDATE tasks SET heartbeat_at_ms = NULL WHERE status = ? AND lease_expires_at_ms < ?",
                 (RUNNING, now_ms()),
             )
             return max(0, getattr(cursor, "rowcount", 0))
@@ -492,10 +512,8 @@ class TaskWorker:
         with self._lock:
             stranded = list(self._inflight)
         for task_id in stranded:
-            try:
+            with suppress(PlatformError):  # pragma: no cover - already finished concurrently
                 self._queue.fail(task_id, owner=self.owner, error="worker shutdown before completion", retry=True)
-            except PlatformError:  # pragma: no cover - already finished concurrently
-                pass
 
     def _start_heartbeat(self, task_id: str) -> _Heartbeat:
         heartbeat = _Heartbeat(self._queue, task_id, self.owner)

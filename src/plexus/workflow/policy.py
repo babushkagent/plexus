@@ -15,7 +15,7 @@ from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 from ..errors import CircuitOpen, PlatformError
 
@@ -24,7 +24,7 @@ def _retry_if_retryable(exc: BaseException) -> bool:
     return isinstance(exc, PlatformError) and exc.retryable
 
 
-class Jitter(str, Enum):
+class Jitter(StrEnum):
     FULL = "full"
     EQUAL = "equal"
     NONE = "none"
@@ -70,7 +70,7 @@ class RetryPolicy:
                 attempt += 1
 
 
-class BreakerState(str, Enum):
+class BreakerState(StrEnum):
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half_open"
@@ -157,9 +157,7 @@ class CircuitBreaker:
                         self._close()
             else:
                 self._consecutive_failures += 1
-                if self._state is BreakerState.HALF_OPEN:
-                    self._trip(now)
-                elif self._should_trip(now):
+                if self._state is BreakerState.HALF_OPEN or self._should_trip(now):
                     self._trip(now)
 
     def retry_after_s(self) -> float:

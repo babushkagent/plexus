@@ -7,8 +7,9 @@ HTTP server, so these types carry no dependency on ``http.server``.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any
 
 from ..errors import Unauthorized, ValidationFailed
 from ..telemetry import TraceContext

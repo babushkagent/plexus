@@ -12,6 +12,10 @@ import math
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from plexus.config import Settings
 
 Clock = Callable[[], float]
 
@@ -92,7 +96,7 @@ class Autoscaler:
         return self._desired
 
     @classmethod
-    def from_settings(cls, settings, **overrides: object) -> Autoscaler:
+    def from_settings(cls, settings: Settings, **overrides: object) -> Autoscaler:
         options: dict[str, object] = {
             "min_replicas": settings.api_min_replicas,
             "max_replicas": settings.api_max_replicas,

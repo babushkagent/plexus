@@ -17,23 +17,26 @@ import sqlite3
 import threading
 import time
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from importlib import resources
 from pathlib import Path
 from typing import Any, Protocol
 
 from ..config import Settings
-from ..errors import PlatformError, UpstreamUnavailable
+from ..errors import PlatformError
 
 
-class Dialect(str, Enum):
+class Dialect(StrEnum):
     SQLITE = "sqlite"
     POSTGRES = "postgres"
 
 
 class Tx(Protocol):
+    # Events queued by `emit()` during the transaction; UnitOfWork drains it after commit.
+    outbox: list[dict[str, Any]]
+
     def execute(self, sql: str, params: Sequence[Any] | None = None) -> Any: ...
 
     def query(self, sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]: ...
@@ -153,8 +156,7 @@ class PostgresBackend:
 
     def __init__(self, dsn: str, *, pool_size: int, statement_timeout_ms: int) -> None:
         try:
-            import psycopg  # type: ignore[import-not-found]
-            from psycopg_pool import ConnectionPool  # type: ignore[import-not-found]
+            from psycopg_pool import ConnectionPool
         except ImportError as exc:  # pragma: no cover - depends on optional extra
             raise PlatformError(
                 "postgres support requires the postgres extra: pip install 'plexus[postgres]'"
@@ -184,7 +186,7 @@ class PostgresBackend:
         conn.rollback()
 
     def in_transaction(self, conn: Any) -> bool:  # pragma: no cover - requires a live server
-        from psycopg.pq import TransactionStatus  # type: ignore[import-not-found]
+        from psycopg.pq import TransactionStatus
 
         return conn.info.transaction_status in {
             TransactionStatus.INTRANS,
@@ -240,10 +242,8 @@ class Database:
             yield tx
             self._backend.commit(conn)
         except Exception:
-            try:
+            with suppress(Exception):  # pragma: no cover - connection already broken
                 self._backend.rollback(conn)
-            except Exception:  # pragma: no cover - connection already broken
-                pass
             raise
         finally:
             release = getattr(self._backend, "release", None)

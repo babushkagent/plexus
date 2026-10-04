@@ -516,10 +516,13 @@ class UnitOfWork:
 
     def publish_pending(self) -> list[dict[str, Any]]:
         """Deliver outbox events queued in this transaction (post-commit)."""
-        events = list(getattr(self._tx, "outbox", []))
+        tx = self._tx
+        if tx is None:
+            return []
+        events = list(tx.outbox)
         if not events:
             return []
-        del self._tx.outbox[: len(events)]
+        del tx.outbox[: len(events)]
         if events and self._sink is not None:
             self._sink.publish(events)
             with self._db.transaction(immediate=True, tenant_id=self._tenant_id) as tx:

@@ -170,7 +170,8 @@ class _HttpProvider:
         request = urllib.request.Request(f"{self.base_url}{path}", data=body, headers=self.headers, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
-                return response.read()
+                content: bytes = response.read()
+                return content
         except (urllib.error.URLError, ConnectionError, OSError, TimeoutError) as exc:
             raise _classify(exc, provider=self.name) from exc
 

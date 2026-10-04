@@ -485,22 +485,6 @@ class ModelRepository:
         row = self._tx.query_one(sql, params)
         return ModelVersion.from_row(row) if row else None
 
-    def list(self, *, tenant_id: str, name: str | None = None, stage: str | None = None, limit: int = 50) -> list[ModelVersion]:
-        sql = "SELECT * FROM model_versions WHERE tenant_id = ?"
-        params: list[Any] = [tenant_id]
-        if name is not None:
-            sql += " AND name = ?"
-            params.append(name)
-        if stage is not None:
-            sql += " AND stage = ?"
-            params.append(stage)
-        sql += " ORDER BY created_at_ms DESC LIMIT ?"
-        params.append(limit)
-        return [ModelVersion.from_row(row) for row in self._tx.query(sql, params)]
-
-    def count(self, *, tenant_id: str) -> int:
-        return int(self._tx.scalar("SELECT COUNT(*) FROM model_versions WHERE tenant_id = ?", (tenant_id,)) or 0)
-
     def lineage(self, *, tenant_id: str, version_id: str, max_depth: int = 32) -> list[ModelVersion]:
         """Walk parent_id to the root; provenance questions must be answerable in one call."""
         chain: list[ModelVersion] = []
@@ -522,6 +506,22 @@ class ModelRepository:
         if not chain:
             raise NotFound("model version not found", details={"version_id": version_id})
         return chain
+
+    def list(self, *, tenant_id: str, name: str | None = None, stage: str | None = None, limit: int = 50) -> list[ModelVersion]:
+        sql = "SELECT * FROM model_versions WHERE tenant_id = ?"
+        params: list[Any] = [tenant_id]
+        if name is not None:
+            sql += " AND name = ?"
+            params.append(name)
+        if stage is not None:
+            sql += " AND stage = ?"
+            params.append(stage)
+        sql += " ORDER BY created_at_ms DESC LIMIT ?"
+        params.append(limit)
+        return [ModelVersion.from_row(row) for row in self._tx.query(sql, params)]
+
+    def count(self, *, tenant_id: str) -> int:
+        return int(self._tx.scalar("SELECT COUNT(*) FROM model_versions WHERE tenant_id = ?", (tenant_id,)) or 0)
 
     def _require_row(self, tenant_id: str, version_id: str) -> ModelVersion:
         row = self._tx.query_one(
@@ -671,7 +671,7 @@ class DeploymentRepository:
     def set_traffic(self, tenant_id: str, deployment_id: str, traffic_percent: int) -> Deployment:
         if not 0 <= traffic_percent <= 100:
             raise ValidationFailed("traffic_percent must be between 0 and 100")
-        record = self._require_row(tenant_id, deployment_id)
+        self._require_row(tenant_id, deployment_id)
         self._tx.execute(
             "UPDATE deployments SET traffic_percent = ?, updated_at_ms = ? WHERE tenant_id = ? AND id = ?",
             (traffic_percent, now_ms(), tenant_id, deployment_id),

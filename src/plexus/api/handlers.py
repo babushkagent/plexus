@@ -10,9 +10,10 @@ fail. That is what keeps ~40 routes auditable in one screen.
 from __future__ import annotations
 
 import json
-import time
 import threading
+import time
 from collections.abc import Callable, Iterator
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -24,8 +25,8 @@ from ..telemetry import METRICS
 from ..tenancy.auth import TokenIssuer, mint_api_key
 from ..tenancy.context import Plan
 from ..tenancy.rbac import (
-    ROLE_AUDITOR,
     ROLE_ADMIN,
+    ROLE_AUDITOR,
     ROLE_INFERENCE_USER,
     ROLE_ML_ENGINEER,
     ROLE_OWNER,
@@ -71,7 +72,7 @@ class StoreLedger:
     even when the caller is about to fail for an unrelated reason.
     """
 
-    def __init__(self, app: "App") -> None:
+    def __init__(self, app: App) -> None:
         self._app = app
 
     def assert_budget(self, tenant_id: str, projected_cost_usd: float) -> None:
@@ -111,7 +112,7 @@ class StoreLedger:
 
 
 def _audit(
-    app: "App",
+    app: App,
     request: Request,
     action: str,
     resource: str = "",
@@ -187,7 +188,7 @@ def _since_ms(request: Request) -> int:
     return int((time.time() - days * 86_400) * 1000)
 
 
-def _tasks(app: "App") -> TaskQueue:
+def _tasks(app: App) -> TaskQueue:
     """One place that turns settings into queue lease/attempt policy.
 
     Every caller must use the same lease so a crashed worker's tasks become
@@ -203,7 +204,7 @@ def _tasks(app: "App") -> TaskQueue:
 # ------------------------------------------------------------------------ liveness
 
 
-def healthz(app: "App", request: Request) -> Response:
+def healthz(app: App, request: Request) -> Response:
     """Liveness: the process is up. Never touches dependencies."""
     return respond(
         {
@@ -215,11 +216,11 @@ def healthz(app: "App", request: Request) -> Response:
     )
 
 
-def readyz(app: "App", request: Request) -> Response:
+def readyz(app: App, request: Request) -> Response:
     """Readiness: the store answers, so writes can succeed. Drains are still live."""
     try:
         database_up = app.db.ping()
-    except Exception:  # noqa: BLE001 - readiness must never raise
+    except Exception:
         database_up = False
     body = {"status": "ready" if database_up else "not_ready", "database": database_up}
     return respond(body, status=200 if database_up else 503)
@@ -235,13 +236,13 @@ _sample_lock = threading.Lock()
 _next_sample_at = 0.0
 
 
-def metrics(app: "App", request: Request) -> Response:
+def metrics(app: App, request: Request) -> Response:
     """Prometheus exposition. Platform-scoped: cardinality is itself a secret."""
     _sample_operational_gauges(app)
     return Response(status=200, raw=METRICS.render_prometheus(), content_type="text/plain; version=0.0.4")
 
 
-def _sample_operational_gauges(app: "App") -> None:
+def _sample_operational_gauges(app: App) -> None:
     """Publish backlog depth and per-provider breaker state for autoscaling/alerting.
 
     Never raises: an exposition endpoint that 500s turns a partial outage into a blind
@@ -253,14 +254,12 @@ def _sample_operational_gauges(app: "App") -> None:
         if now < _next_sample_at:
             return
         _next_sample_at = now + OPERATIONAL_SAMPLE_TTL_S
-    try:
+    with suppress(Exception):  # metrics must never take down a scrape
         METRICS.gauge(
             "plexus_queue_depth",
             float(_tasks(app).ready_count()),
             help_text="Tasks that are pending and past their run_after deadline",
         )
-    except Exception:  # noqa: BLE001 - metrics must survive an unhealthy store
-        pass
     try:
         for name, state in _breaker_states(app).items():
             METRICS.gauge(
@@ -269,11 +268,11 @@ def _sample_operational_gauges(app: "App") -> None:
                 labels={"provider": name},
                 help_text="Provider breaker state: 0 closed, 1 half-open, 2 open",
             )
-    except Exception:  # noqa: BLE001 - a missing gateway must not break the scrape
+    except Exception:
         pass
 
 
-def _breaker_states(app: "App") -> dict[str, str]:
+def _breaker_states(app: App) -> dict[str, str]:
     providers = app.gateway.health().get("providers", {})
     return {str(name): str(state.get("breaker", "open")) for name, state in providers.items()}
 
@@ -281,7 +280,7 @@ def _breaker_states(app: "App") -> dict[str, str]:
 # -------------------------------------------------------------------------- tenant
 
 
-def get_tenant(app: "App", request: Request) -> Response:
+def get_tenant(app: App, request: Request) -> Response:
     with app.uow() as uow:
         tenant = uow.tenants.require(request.tenant_id)
     limits = app.policy_for(tenant.id, request.auth.limits).limits
@@ -300,7 +299,7 @@ def get_tenant(app: "App", request: Request) -> Response:
     )
 
 
-def update_tenant(app: "App", request: Request) -> Response:
+def update_tenant(app: App, request: Request) -> Response:
     """Self-service profile edits. Limits and plan are platform-only on purpose."""
     body = _require_body(request)
     name = _str(body, "name")
@@ -327,7 +326,7 @@ def update_tenant(app: "App", request: Request) -> Response:
     return respond(_tenant_dict(tenant))
 
 
-def create_tenant(app: "App", request: Request) -> Response:
+def create_tenant(app: App, request: Request) -> Response:
     body = _require_body(request, "name")
     plan = _plan(body.get("plan", Plan.STANDARD.value))
     with app.uow(immediate=True) as uow:
@@ -351,18 +350,20 @@ def create_tenant(app: "App", request: Request) -> Response:
     return created(_tenant_dict(tenant))
 
 
-def list_tenants(app: "App", request: Request) -> Response:
+def list_tenants(app: App, request: Request) -> Response:
     with app.uow() as uow:
-        return respond({"items": [_tenant_dict(t) for t in uow.tenants.list()]})
+        items = [_tenant_dict(tenant) for tenant in uow.tenants.list()]
+    return respond({"items": items})
 
 
-def get_platform_tenant(app: "App", request: Request) -> Response:
+def get_platform_tenant(app: App, request: Request) -> Response:
     tenant_id = request.param("tenant_id")
     with app.uow() as uow:
-        return respond(_tenant_dict(uow.tenants.require(tenant_id)))
+        tenant = uow.tenants.require(tenant_id)
+    return respond(_tenant_dict(tenant))
 
 
-def update_platform_tenant(app: "App", request: Request) -> Response:
+def update_platform_tenant(app: App, request: Request) -> Response:
     """Plan, status and per-tenant limit overrides.
 
     Policy cache is invalidated after the commit so a raised rate limit takes effect
@@ -409,7 +410,7 @@ def update_platform_tenant(app: "App", request: Request) -> Response:
 # --------------------------------------------------------------------------- keys
 
 
-def create_key(app: "App", request: Request, *, tenant_id: str | None = None) -> Response:
+def create_key(app: App, request: Request, *, tenant_id: str | None = None) -> Response:
     body = _require_body(request)
     owner = tenant_id or request.tenant_id
     roles = _roles(body.get("roles"))
@@ -450,13 +451,14 @@ def create_key(app: "App", request: Request, *, tenant_id: str | None = None) ->
     )
 
 
-def list_keys(app: "App", request: Request, *, tenant_id: str | None = None) -> Response:
+def list_keys(app: App, request: Request, *, tenant_id: str | None = None) -> Response:
     owner = tenant_id or request.tenant_id
     with app.uow(tenant_id=owner) as uow:
-        return respond({"items": [_key_dict(record) for record in uow.keys.list(owner)]})
+        items = [_key_dict(record) for record in uow.keys.list(owner)]
+    return respond({"items": items})
 
 
-def revoke_key(app: "App", request: Request, *, tenant_id: str | None = None) -> Response:
+def revoke_key(app: App, request: Request, *, tenant_id: str | None = None) -> Response:
     owner = tenant_id or request.tenant_id
     key_id = request.param("key_id")
     with app.uow(tenant_id=owner, immediate=True) as uow:
@@ -468,7 +470,7 @@ def revoke_key(app: "App", request: Request, *, tenant_id: str | None = None) ->
     return no_content()
 
 
-def issue_token(app: "App", request: Request) -> Response:
+def issue_token(app: App, request: Request) -> Response:
     """Short-lived JWT for a human or workload inside the caller's tenant."""
     body = _require_body(request)
     ctx = request.auth
@@ -486,7 +488,7 @@ def issue_token(app: "App", request: Request) -> Response:
 # ------------------------------------------------------------------------ members
 
 
-def list_members(app: "App", request: Request, *, tenant_id: str | None = None) -> Response:
+def list_members(app: App, request: Request, *, tenant_id: str | None = None) -> Response:
     owner = tenant_id or request.tenant_id
     subject = request.arg("subject") or request.auth.subject
     with app.uow(tenant_id=owner) as uow:
@@ -494,7 +496,7 @@ def list_members(app: "App", request: Request, *, tenant_id: str | None = None) 
     return respond({"subject": subject, "roles": roles, "available": sorted(ROLES_BY_NAME)})
 
 
-def grant_member(app: "App", request: Request, *, tenant_id: str | None = None) -> Response:
+def grant_member(app: App, request: Request, *, tenant_id: str | None = None) -> Response:
     owner = tenant_id or request.tenant_id
     subject = request.param("subject")
     body = _require_body(request, "role")
@@ -508,7 +510,7 @@ def grant_member(app: "App", request: Request, *, tenant_id: str | None = None) 
     return created({"subject": subject, "role": role})
 
 
-def revoke_member(app: "App", request: Request, *, tenant_id: str | None = None) -> Response:
+def revoke_member(app: App, request: Request, *, tenant_id: str | None = None) -> Response:
     owner = tenant_id or request.tenant_id
     subject = request.param("subject")
     body = _require_body(request, "role")
@@ -525,7 +527,7 @@ def revoke_member(app: "App", request: Request, *, tenant_id: str | None = None)
 # ---------------------------------------------------------------------- inference
 
 
-def create_completion(app: "App", request: Request) -> Response:
+def create_completion(app: App, request: Request) -> Response:
     """OpenAI-compatible chat completion with hashing, fallback, budget and billing.
 
     Streaming is decided before the first byte is sent: `gateway.stream` pulls one
@@ -596,7 +598,7 @@ def create_completion(app: "App", request: Request) -> Response:
     return respond({"id": f"chatcmpl-{request_id}", "created": int(time.time()), **result.to_dict()})
 
 
-def _completion_request(app: "App", body: dict[str, Any]) -> CompletionRequest:
+def _completion_request(app: App, body: dict[str, Any]) -> CompletionRequest:
     raw_messages = body.get("messages")
     if not isinstance(raw_messages, list) or not raw_messages:
         raise ValidationFailed("messages must be a non-empty array")
@@ -652,7 +654,7 @@ def _sse_events(handle: Any, model: str, *, request_id: str = "unknown") -> Iter
     return generate()
 
 
-def list_models(app: "App", request: Request) -> Response:
+def list_models(app: App, request: Request) -> Response:
     """Registry view for this tenant (never another tenant's models, by construction)."""
     with app.uow(tenant_id=request.tenant_id) as uow:
         versions = ModelRepository(uow.tx, outbox=uow.outbox).list(
@@ -672,7 +674,7 @@ def list_models(app: "App", request: Request) -> Response:
 # ----------------------------------------------------------------------- registry
 
 
-def register_model(app: "App", request: Request) -> Response:
+def register_model(app: App, request: Request) -> Response:
     body = _require_body(request, "name", "digest")
     with app.uow(tenant_id=request.tenant_id, immediate=True) as uow:
         version, created_flag = ModelRepository(uow.tx, outbox=uow.outbox).register(
@@ -697,7 +699,7 @@ def register_model(app: "App", request: Request) -> Response:
     return created(version.to_dict()) if created_flag else respond(version.to_dict())
 
 
-def get_model(app: "App", request: Request) -> Response:
+def get_model(app: App, request: Request) -> Response:
     version_id = request.param("version_id")
     with app.uow(tenant_id=request.tenant_id) as uow:
         version = ModelRepository(uow.tx).require(request.tenant_id, version_id)
@@ -705,14 +707,14 @@ def get_model(app: "App", request: Request) -> Response:
     return respond({**version.to_dict(), "artifacts": [artifact.to_dict() for artifact in artifacts]})
 
 
-def model_lineage(app: "App", request: Request) -> Response:
+def model_lineage(app: App, request: Request) -> Response:
     version_id = request.param("version_id")
     with app.uow(tenant_id=request.tenant_id) as uow:
         chain = ModelRepository(uow.tx).lineage(tenant_id=request.tenant_id, version_id=version_id)
     return respond({"items": [version.to_dict() for version in chain]})
 
 
-def record_model_eval(app: "App", request: Request) -> Response:
+def record_model_eval(app: App, request: Request) -> Response:
     body = _require_body(request, "passed")
     with app.uow(tenant_id=request.tenant_id, immediate=True) as uow:
         version = ModelRepository(uow.tx, outbox=uow.outbox).record_eval(
@@ -725,7 +727,7 @@ def record_model_eval(app: "App", request: Request) -> Response:
     return respond(version.to_dict())
 
 
-def sign_model(app: "App", request: Request) -> Response:
+def sign_model(app: App, request: Request) -> Response:
     body = _require_body(request, "signature")
     with app.uow(tenant_id=request.tenant_id, immediate=True) as uow:
         version = ModelRepository(uow.tx).sign(
@@ -737,7 +739,7 @@ def sign_model(app: "App", request: Request) -> Response:
     return respond(version.to_dict())
 
 
-def promote_model(app: "App", request: Request) -> Response:
+def promote_model(app: App, request: Request) -> Response:
     """Stage transitions. Traffic stages require eval + signature; the store enforces it."""
     body = _require_body(request, "stage")
     with app.uow(tenant_id=request.tenant_id, immediate=True) as uow:
@@ -751,7 +753,7 @@ def promote_model(app: "App", request: Request) -> Response:
     return respond(version.to_dict())
 
 
-def attach_artifact(app: "App", request: Request) -> Response:
+def attach_artifact(app: App, request: Request) -> Response:
     body = _require_body(request, "digest", "kind", "uri")
     with app.uow(tenant_id=request.tenant_id, immediate=True) as uow:
         artifact = ModelRepository(uow.tx).attach_artifact(
@@ -766,7 +768,7 @@ def attach_artifact(app: "App", request: Request) -> Response:
     return created(artifact.to_dict())
 
 
-def list_artifacts(app: "App", request: Request) -> Response:
+def list_artifacts(app: App, request: Request) -> Response:
     digest = request.require_arg("digest")
     with app.uow(tenant_id=request.tenant_id) as uow:
         artifacts = ModelRepository(uow.tx).artifacts(tenant_id=request.tenant_id, digest=digest)
@@ -776,7 +778,7 @@ def list_artifacts(app: "App", request: Request) -> Response:
 # -------------------------------------------------------------------- deployments
 
 
-def upsert_deployment(app: "App", request: Request) -> Response:
+def upsert_deployment(app: App, request: Request) -> Response:
     body = _require_body(request, "name", "model_version_id")
     with app.uow(tenant_id=request.tenant_id, immediate=True) as uow:
         deployment = DeploymentRepository(uow.tx, outbox=uow.outbox).upsert(
@@ -793,19 +795,19 @@ def upsert_deployment(app: "App", request: Request) -> Response:
     return created(deployment.to_dict())
 
 
-def list_deployments(app: "App", request: Request) -> Response:
+def list_deployments(app: App, request: Request) -> Response:
     with app.uow(tenant_id=request.tenant_id) as uow:
         items = DeploymentRepository(uow.tx).list(tenant_id=request.tenant_id, limit=request.int_arg("limit", 50))
     return respond({"items": [deployment.to_dict() for deployment in items]})
 
 
-def get_deployment(app: "App", request: Request) -> Response:
+def get_deployment(app: App, request: Request) -> Response:
     with app.uow(tenant_id=request.tenant_id) as uow:
         deployment = DeploymentRepository(uow.tx).require(request.tenant_id, request.param("deployment_id"))
     return respond(deployment.to_dict())
 
 
-def scale_deployment(app: "App", request: Request) -> Response:
+def scale_deployment(app: App, request: Request) -> Response:
     body = _require_body(request, "replicas")
     with app.uow(tenant_id=request.tenant_id, immediate=True) as uow:
         deployment = DeploymentRepository(uow.tx, outbox=uow.outbox).scale(
@@ -815,7 +817,7 @@ def scale_deployment(app: "App", request: Request) -> Response:
     return respond(deployment.to_dict())
 
 
-def set_deployment_traffic(app: "App", request: Request) -> Response:
+def set_deployment_traffic(app: App, request: Request) -> Response:
     body = _require_body(request, "traffic_percent")
     with app.uow(tenant_id=request.tenant_id, immediate=True) as uow:
         deployment = DeploymentRepository(uow.tx, outbox=uow.outbox).set_traffic(
@@ -825,7 +827,7 @@ def set_deployment_traffic(app: "App", request: Request) -> Response:
     return respond(deployment.to_dict())
 
 
-def rollback_deployment(app: "App", request: Request) -> Response:
+def rollback_deployment(app: App, request: Request) -> Response:
     body = _require_body(request, "model_version_id")
     with app.uow(tenant_id=request.tenant_id, immediate=True) as uow:
         deployment = DeploymentRepository(uow.tx, outbox=uow.outbox).rollback(
@@ -840,7 +842,7 @@ def rollback_deployment(app: "App", request: Request) -> Response:
 # --------------------------------------------------------------------------- runs
 
 
-def start_run(app: "App", request: Request) -> Response:
+def start_run(app: App, request: Request) -> Response:
     body = _require_body(request, "kind")
     with app.uow(tenant_id=request.tenant_id, immediate=True) as uow:
         run = RunRepository(uow.tx).start(
@@ -853,7 +855,7 @@ def start_run(app: "App", request: Request) -> Response:
     return created(run.to_dict())
 
 
-def finish_run(app: "App", request: Request) -> Response:
+def finish_run(app: App, request: Request) -> Response:
     body = _require_body(request, "status")
     with app.uow(tenant_id=request.tenant_id, immediate=True) as uow:
         run = RunRepository(uow.tx).finish(
@@ -867,7 +869,7 @@ def finish_run(app: "App", request: Request) -> Response:
     return respond(run.to_dict())
 
 
-def list_runs(app: "App", request: Request) -> Response:
+def list_runs(app: App, request: Request) -> Response:
     with app.uow(tenant_id=request.tenant_id) as uow:
         runs = RunRepository(uow.tx).list(
             tenant_id=request.tenant_id,
@@ -877,7 +879,7 @@ def list_runs(app: "App", request: Request) -> Response:
     return respond({"items": [run.to_dict() for run in runs]})
 
 
-def get_run(app: "App", request: Request) -> Response:
+def get_run(app: App, request: Request) -> Response:
     with app.uow(tenant_id=request.tenant_id) as uow:
         run = RunRepository(uow.tx).require(request.tenant_id, request.param("run_id"))
     return respond(run.to_dict())
@@ -886,7 +888,7 @@ def get_run(app: "App", request: Request) -> Response:
 # -------------------------------------------------------------------------- tasks
 
 
-def enqueue_task(app: "App", request: Request) -> Response:
+def enqueue_task(app: App, request: Request) -> Response:
     body = _require_body(request, "type")
     task_id = _tasks(app).enqueue(
         tenant_id=request.tenant_id,
@@ -903,7 +905,7 @@ def enqueue_task(app: "App", request: Request) -> Response:
     return created({"id": task_id, "status": "pending"})
 
 
-def get_task(app: "App", request: Request) -> Response:
+def get_task(app: App, request: Request) -> Response:
     task = _tasks(app).get(request.param("task_id"))
     if task is None or task.tenant_id != request.tenant_id:
         # A foreign task id must be indistinguishable from a missing one.
@@ -911,7 +913,7 @@ def get_task(app: "App", request: Request) -> Response:
     return respond(task.to_dict())
 
 
-def cancel_task(app: "App", request: Request) -> Response:
+def cancel_task(app: App, request: Request) -> Response:
     cancelled = _tasks(app).cancel(
         request.param("task_id"), tenant_id=request.tenant_id
     )
@@ -921,14 +923,14 @@ def cancel_task(app: "App", request: Request) -> Response:
     return no_content()
 
 
-def list_dead_letters(app: "App", request: Request) -> Response:
+def list_dead_letters(app: App, request: Request) -> Response:
     tasks = _tasks(app).dead_letters(
         tenant_id=request.tenant_id, limit=request.int_arg("limit", 50)
     )
     return respond({"items": [task.to_dict() for task in tasks]})
 
 
-def requeue_dead_letter(app: "App", request: Request) -> Response:
+def requeue_dead_letter(app: App, request: Request) -> Response:
     requeued = _tasks(app).requeue_dead(
         request.param("task_id"), tenant_id=request.tenant_id
     )
@@ -941,7 +943,7 @@ def requeue_dead_letter(app: "App", request: Request) -> Response:
 # --------------------------------------------------------------- usage and audit
 
 
-def get_usage(app: "App", request: Request) -> Response:
+def get_usage(app: App, request: Request) -> Response:
     with app.uow(tenant_id=request.tenant_id) as uow:
         summary = uow.usage.summarize(request.tenant_id, since_ms=_since_ms(request))
         tenant = uow.tenants.require(request.tenant_id)
@@ -951,7 +953,7 @@ def get_usage(app: "App", request: Request) -> Response:
     return respond({"window_days": request.int_arg("days", 30), **summary})
 
 
-def list_audit(app: "App", request: Request) -> Response:
+def list_audit(app: App, request: Request) -> Response:
     with app.uow(tenant_id=request.tenant_id) as uow:
         entries = uow.audit.list(request.tenant_id, limit=request.int_arg("limit", 50))
     return respond({"items": entries})
@@ -960,7 +962,7 @@ def list_audit(app: "App", request: Request) -> Response:
 # ----------------------------------------------------------------- platform plane
 
 
-def platform_health(app: "App", request: Request) -> Response:
+def platform_health(app: App, request: Request) -> Response:
     gateway = app.gateway.health()
     queue = _tasks(app).depth()
     return respond(
@@ -975,7 +977,7 @@ def platform_health(app: "App", request: Request) -> Response:
     )
 
 
-def platform_scaling(app: "App", request: Request) -> Response:
+def platform_scaling(app: App, request: Request) -> Response:
     """Deterministic view of the autoscaler: same signals always give same decision."""
     queue = _tasks(app).depth()
     autoscaler = Autoscaler.from_settings(app.settings)
@@ -998,7 +1000,7 @@ def platform_scaling(app: "App", request: Request) -> Response:
     )
 
 
-def platform_queue(app: "App", request: Request) -> Response:
+def platform_queue(app: App, request: Request) -> Response:
     return respond({"depth": _tasks(app).depth()})
 
 

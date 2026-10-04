@@ -13,11 +13,10 @@ from typing import Any
 
 import pytest
 
+from conftest import Client
 from plexus.api import handlers
 from plexus.api.server import App
 from plexus.scaling.autoscaler import render_external_metric, render_keda
-
-from conftest import Client
 
 SCALEDOBJECT = Path(__file__).resolve().parents[1] / "deploy" / "k8s" / "base" / "scaledobject.yaml"
 

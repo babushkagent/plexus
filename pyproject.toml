@@ -11,7 +11,7 @@ license = { text = "Apache-2.0" }
 dependencies = []
 
 [project.optional-dependencies]
-postgres = ["psycopg[binary]>=3.2"]
+postgres = ["psycopg[binary]>=3.2", "psycopg-pool>=3.2"]
 observability = ["opentelemetry-distro>=1.27", "prometheus-client>=0.20"]
 durable = ["temporalio>=1.8"]
 serve = ["uvloop>=0.21"]
@@ -47,6 +47,15 @@ python_version = "3.13"
 strict = true
 mypy_path = "src"
 packages = ["plexus"]
+
+# Integrations live in extras, so the static job type-checks without them. Declaring the
+# missing-import boundary once here keeps `mypy` deterministic whether or not the extra is
+# installed, which inline `# type: ignore[import-not-found]` comments could not do (they
+# flip to "unused ignore" errors as soon as someone installs `plexus[postgres]`).
+[[tool.mypy.overrides]]
+module = ["psycopg.*", "psycopg_pool.*", "opentelemetry.*", "prometheus_client.*", "uvloop.*", "temporalio.*"]
+ignore_missing_imports = true
+follow_untyped_imports = false
 
 [tool.pytest.ini_options]
 addopts = "-q"

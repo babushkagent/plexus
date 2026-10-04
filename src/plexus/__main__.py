@@ -19,7 +19,7 @@ from typing import Any
 from .api.server import App, serve
 from .config import ConfigError, Settings, load_settings
 from .errors import Conflict
-from .telemetry import METRICS, configure_logging, new_trace_id
+from .telemetry import configure_logging, new_trace_id
 from .tenancy.auth import TokenIssuer, mint_api_key
 from .tenancy.context import Plan
 from .tenancy.rbac import ROLE_OWNER
@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {problem}", file=sys.stderr)
         return EXIT_CONFIG
     configure_logging(settings.log_level, json_logs=settings.json_logs)
-    command: Callable[[argparse.Namespace, Settings], int] = getattr(args, "_command")
+    command: Callable[[argparse.Namespace, Settings], int] = args._command
     try:
         return command(args, settings)
     except ConfigError as exc:
@@ -72,7 +72,7 @@ def _cmd_config_check(args: argparse.Namespace, settings: Settings) -> int:
 
         database = Database(settings)
         reachable = {"database": "reachable" if database.ping() else "unreachable"}
-    except Exception as exc:  # noqa: BLE001 - a check command reports, it does not raise
+    except Exception as exc:
         reachable = {"database": f"error: {type(exc).__name__}: {exc}"}
     print(json.dumps({**body, **reachable}, indent=2, sort_keys=True))
     if reachable.get("database") != "reachable":

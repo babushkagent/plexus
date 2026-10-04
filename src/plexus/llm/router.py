@@ -19,7 +19,7 @@ import logging
 import time
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 from ..config import Settings
 from ..errors import (
@@ -35,7 +35,7 @@ from ..errors import (
 )
 from ..scaling.hashring import HashRing
 from ..scaling.ratelimit import RateLimitRegistry
-from ..telemetry import METRICS, TRACER
+from ..telemetry import METRICS
 from ..workflow.policy import BreakerRegistry, BreakerState
 from .provider import Completion, CompletionRequest, Provider, Usage
 
@@ -65,7 +65,7 @@ class Pricing:
     usage returned by the provider is charged afterwards.
     """
 
-    DEFAULTS: dict[str, ProviderPrice] = {
+    DEFAULTS: ClassVar[dict[str, ProviderPrice]] = {
         "echo": ProviderPrice(0.0, 0.0),
         "openai": ProviderPrice(0.15 / 1000, 0.60 / 1000),
         "ollama": ProviderPrice(0.0, 0.0),
@@ -290,7 +290,7 @@ class InferenceRouter:
                     completion = provider.complete(request)
             except _PASS_THROUGH:
                 raise
-            except Exception as exc:  # noqa: BLE001 - every failure becomes an attempt + fallback
+            except Exception as exc:
                 latency_ms = (time.perf_counter() - attempt_start) * 1000.0
                 attempts.append(Attempt(provider=name, ok=False, latency_ms=latency_ms, error=_reason(exc)))
                 log.warning("inference_attempt_failed", extra={"extra": {"provider": name, "model": request.model}})
@@ -351,7 +351,7 @@ class InferenceRouter:
                 ledger.assert_budget(tenant_id, projected)
             except _PASS_THROUGH:
                 raise
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 attempts.append(Attempt(provider=name, ok=False, latency_ms=0.0, error=_reason(exc)))
                 continue
             probe = time.perf_counter()
@@ -360,7 +360,7 @@ class InferenceRouter:
                 first = next(upstream, None)
             except _PASS_THROUGH:
                 raise
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 breaker.record(success=False)
                 attempts.append(
                     Attempt(provider=name, ok=False, latency_ms=(time.perf_counter() - probe) * 1000.0,

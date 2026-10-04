@@ -8,16 +8,17 @@ error rather than a cross-tenant leak.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Iterator
+from enum import StrEnum
+from typing import Any
 
 from ..errors import Forbidden, TenantIsolationViolation, Unauthorized
 
 
-class Plan(str, Enum):
+class Plan(StrEnum):
     FREE = "free"
     STANDARD = "standard"
     ENTERPRISE = "enterprise"

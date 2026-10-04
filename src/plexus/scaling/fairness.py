@@ -10,14 +10,12 @@ from __future__ import annotations
 
 import threading
 from collections import Counter, deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Generic, TypeVar
-
-T = TypeVar("T")
 
 
 @dataclass(slots=True)
-class _Flow(Generic[T]):
+class _Flow[T]:
     tenant_id: str
     weight: float = 1.0
     virtual_time: float = 0.0
@@ -37,7 +35,7 @@ class FlowSnapshot:
     share: float
 
 
-class FairQueue(Generic[T]):
+class FairQueue[T]:
     """Virtual-time scheduler over per-tenant FIFO flows."""
 
     def __init__(self, *, default_weight: float = 1.0, max_share: float = 1.0, window: int = 256) -> None:
@@ -178,8 +176,8 @@ class FairQueue(Generic[T]):
     def _best(
         self,
         ready: list[str],
-        virtual_time,
-        counts: Counter | None,
+        virtual_time: Callable[[str], float],
+        counts: Counter[str] | None,
     ) -> str:
         """Lowest virtual time wins; the share ceiling demotes a hogging tenant."""
         eligible = ready

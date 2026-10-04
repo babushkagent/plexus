@@ -14,11 +14,12 @@ import re
 import signal
 import threading
 import time
+from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
-from functools import lru_cache
+from functools import cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Iterator, Sequence
+from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from ..config import Settings
@@ -29,7 +30,6 @@ from ..errors import (
     NotFound,
     PlatformError,
     RateLimited,
-    Unauthorized,
 )
 from ..ids import fingerprint, new_id
 from ..llm.provider import Provider, build_providers
@@ -39,10 +39,10 @@ from ..store.db import Database
 from ..store.uow import EventSink, Tenant, UnitOfWork
 from ..telemetry import METRICS, TRACER, TraceContext, bind, configure_logging
 from ..tenancy.auth import ApiKeyRecord, Authenticator, CredentialLookup
-from ..tenancy.context import DEFAULT_LIMITS, PlanLimits, TenantContext, use
+from ..tenancy.context import DEFAULT_LIMITS, PlanLimits, use
 from ..tenancy.rbac import authorize, authorize_platform
 from .handlers import ROUTES, Handler, StoreLedger
-from .messages import Request, Response, no_content, respond, stream_response
+from .messages import Request, Response, respond
 
 log = configure_logging()
 
@@ -61,7 +61,7 @@ class Route:
     idempotent: bool = True
 
 
-@lru_cache(maxsize=None)
+@cache
 def _compile(pattern: str) -> re.Pattern[str]:
     return re.compile("^" + re.sub(r"\{(\w+)\}", r"(?P<\1>[^/]+)", pattern) + "$")
 
@@ -89,7 +89,7 @@ class StoreCredentials:
             record = uow.keys.lookup_by_digest(digest)
             if record is not None:
                 uow.keys.touch(record.id)
-            return record
+        return record
 
     def is_denied(self, jti: str) -> bool:
         row = self._app.db.query(
@@ -200,7 +200,7 @@ class App:
                 response = self._pipeline(request, route, allowed, span)
             except PlatformError as exc:
                 response = self._from_error(exc)
-            except Exception as exc:  # noqa: BLE001 - never leak internals to callers
+            except Exception as exc:
                 log.exception("unhandled_request_failure")
                 span.record_error(exc)
                 response = self._from_error(PlatformError("internal error"))
@@ -286,7 +286,7 @@ class App:
     def _with_idempotency(self, request: Request, route: Route, key: str) -> Response:
         assert request.ctx is not None
         tenant_id = request.ctx.tenant_id
-        token = fingerprint({"method": request.method, "path": request.path, "body": request.body.decode("utf-8", "replace")})
+        token = fingerprint(f"{request.method}\n{request.path}\n{request.body.decode('utf-8', 'replace')}")
         with self.uow(tenant_id=tenant_id, immediate=True) as uow:
             outcome = uow.idempotency.check(tenant_id, key, token)
         if outcome.kind == "replay":
@@ -313,7 +313,7 @@ class App:
         headers: dict[str, str] = {}
         retry_after = getattr(exc, "retry_after_s", None)
         if retry_after is not None:
-            headers["Retry-After"] = str(max(1, int(round(retry_after))))
+            headers["Retry-After"] = str(max(1, round(retry_after)))
         return Response(status=exc.status, payload=envelope, headers=headers)
 
 
@@ -340,25 +340,25 @@ class _HTTPRequestHandler(BaseHTTPRequestHandler):
     def app(self) -> App:
         return self.server.app  # type: ignore[attr-defined,no-any-return]
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         self._exchange("GET")
 
-    def do_HEAD(self) -> None:  # noqa: N802
+    def do_HEAD(self) -> None:
         self._exchange("HEAD")
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         self._exchange("POST")
 
-    def do_PUT(self) -> None:  # noqa: N802
+    def do_PUT(self) -> None:
         self._exchange("PUT")
 
-    def do_PATCH(self) -> None:  # noqa: N802
+    def do_PATCH(self) -> None:
         self._exchange("PATCH")
 
-    def do_DELETE(self) -> None:  # noqa: N802
+    def do_DELETE(self) -> None:
         self._exchange("DELETE")
 
-    def do_OPTIONS(self) -> None:  # noqa: N802
+    def do_OPTIONS(self) -> None:
         self._exchange("OPTIONS")
 
     def _exchange(self, method: str) -> None:
@@ -433,7 +433,7 @@ class _HTTPRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             for event in response.events or ():
-                self.wfile.write(f"data: {json.dumps(event)}\n\n".encode("utf-8"))
+                self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
                 self.wfile.flush()
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
@@ -445,7 +445,7 @@ class _HTTPRequestHandler(BaseHTTPRequestHandler):
                 close()
             self.close_connection = True
 
-    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+    def log_message(self, format: str, *args: Any) -> None:
         """Structured access logging happens in _exchange; keep stderr quiet."""
 
 
@@ -463,8 +463,9 @@ class PlexusServer(ThreadingHTTPServer):
 
     @property
     def url(self) -> str:
-        host, port = self.server_address[0], self.server_address[1]
-        return f"http://{host}:{port}"
+        raw_host, raw_port = self.server_address[0], self.server_address[1]
+        host = raw_host.decode() if isinstance(raw_host, bytes) else str(raw_host)
+        return f"http://{host}:{int(raw_port)}"
 
     def serve_background(self) -> threading.Thread:
         thread = threading.Thread(target=self.serve_forever, name="plexus-http", daemon=True)

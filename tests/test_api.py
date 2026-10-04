@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from plexus.api.server import App
-
 from conftest import Client
+from plexus.api.server import App
 
 
 def test_liveness_and_readiness_are_public(app: App, client: Client) -> None:

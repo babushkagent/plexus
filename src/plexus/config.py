@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, fields, replace
-from enum import Enum
+from dataclasses import dataclass, fields, replace
+from enum import Enum, StrEnum
 from typing import Any
 
 DEFAULT_JWT_SECRET = "dev-only-insecure-secret-change-me"
@@ -22,7 +22,7 @@ class ConfigError(Exception):
         super().__init__("invalid configuration: " + "; ".join(self.problems))
 
 
-class Environment(str, Enum):
+class Environment(StrEnum):
     DEV = "dev"
     TEST = "test"
     STAGING = "staging"
@@ -264,7 +264,7 @@ def _env_value(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, Enum):
-        return value.value
+        return str(value.value)
     if isinstance(value, (tuple, list)):
         return ",".join(str(item) for item in value)
     return str(value)

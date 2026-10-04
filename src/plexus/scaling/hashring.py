@@ -13,8 +13,11 @@ from __future__ import annotations
 
 import bisect
 import hashlib
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
+
+HashFn = Callable[[str], int]
+
 
 def blake2b_hash(point: str) -> int:
     return int.from_bytes(hashlib.blake2b(point.encode(), digest_size=8).digest(), "big")
@@ -38,14 +41,14 @@ class RingPoint:
 
 
 def _expand(node: str, weight: float, vnodes: int) -> list[int]:
-    count = max(1, int(round(vnodes * max(0.01, weight))))
+    count = max(1, round(vnodes * max(0.01, weight)))
     return [blake2b_hash(f"{node}#{index}") for index in range(count)]
 
 
 class HashRing:
     """Deterministic rendezvous of keys to nodes with bounded rebalancing."""
 
-    def __init__(self, *, vnodes: int = 128, hash_fn=blake2b_hash) -> None:
+    def __init__(self, *, vnodes: int = 128, hash_fn: HashFn = blake2b_hash) -> None:
         if vnodes < 1:
             raise ValueError("vnodes must be >= 1")
         self._vnodes = vnodes
@@ -159,7 +162,7 @@ def distribution(ring: HashRing, keys: Iterable[str]) -> dict[str, int]:
 class Rendezvous:
     """Highest-random-weight hashing: no ring, minimal movement, best for small pools."""
 
-    def __init__(self, *, hash_fn=blake2b_hash) -> None:
+    def __init__(self, *, hash_fn: HashFn = blake2b_hash) -> None:
         self._hash = hash_fn
         self._nodes: set[str] = set()
 
