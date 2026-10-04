@@ -1,0 +1,19 @@
+# NotReady pods are removed from the endpoints; /readyz is the load-shedding lever.
+# Note: GET /metrics is platform-scoped, so a Prometheus scrape needs a bearer token
+# (PodMonitor with a secret-derived bearerTokenFile, or your mesh's auth policy).
+apiVersion: v1
+kind: Service
+metadata:
+  name: plexus-api
+  labels:
+    app.kubernetes.io/name: plexus
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: plexus
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

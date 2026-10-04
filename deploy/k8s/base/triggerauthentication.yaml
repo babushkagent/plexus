@@ -1,0 +1,20 @@
+# Bearer credential for the Prometheus scrape behind the ScaledObject query. The metric
+# is platform-scoped (per-tenant labels are a confidentiality property), so KEDA gets a
+# read-only token rather than an unauthenticated endpoint or a looser firewall rule.
+#
+#   kubectl create secret generic plexus-prometheus-token -n plexus \
+#     --from-literal=token="Bearer <read-only Prometheus API token>"
+#
+# The header value must include the "Bearer " prefix: KEDA sends this parameter verbatim.
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: plexus-prometheus-access
+  labels:
+    app.kubernetes.io/name: plexus
+    app.kubernetes.io/component: worker
+spec:
+  secretTargetRef:
+    - parameter: Authorization
+      name: plexus-prometheus-token
+      key: token

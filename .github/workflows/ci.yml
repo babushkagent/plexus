@@ -1,0 +1,140 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PLEXUS_ENV: test
+  PLEXUS_LOG_LEVEL: CRITICAL
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check .
+      - name: Type check (strict)
+        run: mypy
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # SQLite is the default store and the one the suite exercises; 3.14 is the
+        # forward-look job so a Python bump is not also a rewrite of this platform.
+        python-version: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pytest
+
+  # The Postgres dialect carries the security model (row-level security, worker scope),
+  # and none of it is exercised by SQLite. This applies the real migration files against
+  # a real server, which catches SQL that only parses in one dialect and policies that
+  # only exist in one -- the class of bug that would otherwise ship a permissive store.
+  postgres-migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: plexus
+          POSTGRES_PASSWORD: plexus
+          POSTGRES_DB: plexus
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PLEXUS_DATABASE_URL: postgresql://plexus:plexus@localhost:5432/plexus
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev,postgres]"
+      - name: Apply migrations
+        run: plexus migrate
+      - name: Confirm the store answers and policies exist
+        run: |
+          plexus config-check
+          psql "$PLEXUS_DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "
+            SELECT count(*) FROM pg_policies WHERE tablename IN ('tasks','outbox_events');
+          " | grep -q '[1-9]' || { echo "worker-scope policies missing"; exit 1; }
+          psql "$PLEXUS_DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "
+            SELECT relforcerowsecurity FROM pg_class WHERE relname = 'tasks';
+          " | grep -q 't' || { echo "tasks must FORCE row level security"; exit 1; }
+
+  # Manifests are the deployment. A typo in a probe or an API version is otherwise only
+  # discovered at `kubectl apply` time, which is the worst possible moment.
+  manifests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install --upgrade pip pyyaml
+      # Parses every shipped manifest, then renders the autoscaler manifests from code and
+      # parses those too: a drift between the two is a bug, not a difference of opinion.
+      - name: Validate deployment and rendered autoscaler manifests
+        env:
+          PYTHONPATH: src
+        run: python tools/check_manifests.py
+
+  # The image is what actually runs; a Dockerfile that only builds on a developer laptop
+  # is not an artifact.
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          push: false
+          load: true
+          tags: plexus:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: The image must run its own version verb with no database attached
+        run: docker run --rm --entrypoint plexus plexus:ci version

@@ -1,0 +1,131 @@
+# Local and single-node stack: Postgres + migrations + API + worker.
+#
+#   docker compose -f deploy/docker/compose.yaml up --build          # core stack
+#   docker compose -f deploy/docker/compose.yaml --profile seed run --rm seed
+#   docker compose -f deploy/docker/compose.yaml --profile tools run --rm tools token --tenant-id <id>
+#
+# Two database identities on purpose: `migrate` connects as the owner (it needs DDL),
+# api and worker connect as plexus_app, a non-superuser non-owner so that row-level
+# security is actually enforced. Defaults below are dev-only; override every secret.
+
+name: plexus
+
+x-plexus-env: &plexus-env
+  PLEXUS_ENV: ${PLEXUS_ENV:-dev}
+  PLEXUS_DATABASE_URL: postgresql://${PLEXUS_APP_USER:-plexus_app}:${PLEXUS_APP_PASSWORD:-app-dev-password}@postgres:5432/${PLEXUS_DB:-plexus}
+  PLEXUS_JWT_SECRET: ${PLEXUS_JWT_SECRET:-dev-only-insecure-jwt-secret-replace-me-0123456789}
+  PLEXUS_API_KEY_PEPPER: ${PLEXUS_API_KEY_PEPPER:-dev-only-insecure-pepper-replace-me}
+  PLEXUS_LOG_LEVEL: ${PLEXUS_LOG_LEVEL:-INFO}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+
+x-runtime: &runtime
+  image: plexus:0.1.0
+  build:
+    context: ../..
+    dockerfile: deploy/docker/Dockerfile
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  volumes:
+    - plexus-home:/var/lib/plexus
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${PLEXUS_DB:-plexus}
+      POSTGRES_USER: ${POSTGRES_USER:-plexus_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-owner-dev-password}
+      PLEXUS_APP_USER: ${PLEXUS_APP_USER:-plexus_app}
+      PLEXUS_APP_PASSWORD: ${PLEXUS_APP_PASSWORD:-app-dev-password}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    # Keep the database unpublished by default. Uncomment for local psql access.
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+    restart: unless-stopped
+
+  # One-shot: schema first, then readers. Keeping DDL in its own service means the
+  # runtime role never needs CREATE and migrations run exactly once per deploy.
+  migrate:
+    <<: *runtime
+    command: ["migrate"]
+    restart: "no"
+    environment:
+      <<: *plexus-env
+      PLEXUS_DATABASE_URL: postgresql://${POSTGRES_USER:-plexus_owner}:${POSTGRES_PASSWORD:-owner-dev-password}@postgres:5432/${PLEXUS_DB:-plexus}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *runtime
+    command: ["serve"]
+    environment: *plexus-env
+    ports:
+      - "${PLEXUS_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # Must exceed PLEXUS_SHUTDOWN_GRACE_S so SIGTERM drains instead of being killed.
+    stop_grace_period: 45s
+    restart: unless-stopped
+
+  worker:
+    <<: *runtime
+    command: ["worker", "--concurrency", "${PLEXUS_WORKER_CONCURRENCY:-4}"]
+    environment: *plexus-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 45s
+    restart: unless-stopped
+
+  # docker compose --profile seed run --rm seed   (prints the API key exactly once)
+  seed:
+    <<: *runtime
+    profiles: ["seed"]
+    command: ["seed", "--name", "${SEED_TENANT_NAME:-acme-demo}", "--force"]
+    restart: "no"
+    environment: *plexus-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # docker compose --profile tools run --rm tools <verb> [args]
+  tools:
+    <<: *runtime
+    profiles: ["tools"]
+    command: ["version"]
+    restart: "no"
+    environment: *plexus-env
+
+  # Optional local upstream so fallback routing can be exercised offline.
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local-models"]
+    volumes:
+      - ollama:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  plexus-home:
+  ollama:

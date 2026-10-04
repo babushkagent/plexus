@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: plexus-config
+data:
+  PLEXUS_ENV: "prod"
+  PLEXUS_LOG_LEVEL: "INFO"
+  PLEXUS_JSON_LOGS: "true"
+  PLEXUS_PORT: "8080"
+  PLEXUS_DB_POOL_SIZE: "8"
+  PLEXUS_WORKER_CONCURRENCY: "4"
+  PLEXUS_API_MIN_REPLICAS: "2"
+  PLEXUS_API_MAX_REPLICAS: "40"
+  PLEXUS_TARGET_QUEUE_DEPTH: "64"
+  PLEXUS_TARGET_P95_MS: "800"
+  # Upstreams are optional; the always-registered echo provider keeps /healthz-style
+  # smoke tests credential-free. Add OLLAMA_BASE_URL for a local GPU pool.

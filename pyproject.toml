@@ -1,0 +1,53 @@
+[project]
+name = "plexus"
+version = "0.1.0"
+description = "Multi-tenant, scale-invariant, fault-tolerant MLOps/LLMOps control plane and inference gateway"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "Apache-2.0" }
+# The verified core is dependency-free on purpose: it runs in air-gapped / minimal
+# environments and keeps the supply surface near zero. Production integrations live
+# in extras so a deployment only pulls what it actually uses.
+dependencies = []
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2"]
+observability = ["opentelemetry-distro>=1.27", "prometheus-client>=0.20"]
+durable = ["temporalio>=1.8"]
+serve = ["uvloop>=0.21"]
+# PyYAML belongs here, not in the core: tools/check_manifests.py validates deployment
+# artifacts, which is a build-time concern and must never be imported at runtime.
+dev = ["pytest>=8.3", "mypy>=1.13", "ruff>=0.8", "types-setuptools", "PyYAML>=6.0"]
+
+[project.scripts]
+plexus = "plexus.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/plexus"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RUF"]
+# B008: the routing table calls capability constructors at class scope on purpose, so the
+# table stays declarative. E501: line length is a soft guide here, not a gate -- docstring
+# prose and SQL literals read better unwrapped than mechanically split, and `ruff format`
+# owns layout. The remaining rules are the ones that find actual defects.
+ignore = ["B008", "E501"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+mypy_path = "src"
+packages = ["plexus"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]

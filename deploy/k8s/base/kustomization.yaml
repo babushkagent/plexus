@@ -1,0 +1,48 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: plexus
+
+# Override the tag in an overlay (`kustomize edit set image`) or with
+# `kubectl apply -k` after editing newTag here.
+images:
+  - name: plexus
+    newTag: "0.1.0"
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: plexus
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false
+
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - configmap.yaml
+  - api-deployment.yaml
+  - api-service.yaml
+  - poddisruptionbudget.yaml
+  - worker-deployment.yaml
+  - hpa.yaml
+  # Both require the KEDA CRDs and a reachable Prometheus; on a cluster with neither,
+  # comment these out and rely on hpa.yaml (CPU) plus `render_external_metric()` once
+  # prometheus-adapter exports plexus_queue_depth.
+  - triggerauthentication.yaml
+  - scaledobject.yaml
+
+# Secrets are intentionally NOT generated here. Create them first:
+#
+#   kubectl create secret generic plexus-secrets -n plexus \
+#     --from-literal=PLEXUS_JWT_SECRET="$(openssl rand -base64 48 | tr -d '\n')" \
+#     --from-literal=PLEXUS_API_KEY_PEPPER="$(openssl rand -base64 32 | tr -d '\n')" \
+#     --from-literal=PLEXUS_DATABASE_URL="postgresql://plexus_app:...@pg-rw:5432/plexus" \
+#     --from-literal=OPENAI_API_KEY="..."
+#
+#   kubectl create secret generic plexus-postgres -n plexus \
+#     --from-literal=connection-string="postgresql://plexus_app:...@pg-rw:5432/plexus"
+#
+#   kubectl create secret generic plexus-prometheus-token -n plexus \
+#     --from-literal=token="Bearer <read-only Prometheus API token>"
+#
+# PLEXUS_ENV=prod makes every pod fail startup with the full list of missing or weak
+# settings, so a forgotten secret is a failed rollout rather than an incident.

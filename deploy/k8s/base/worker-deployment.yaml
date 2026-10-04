@@ -1,0 +1,74 @@
+# Throughput-bound: scales on queue depth (see scaledobject.yaml). Same image, same
+# config, different verb -- which is what keeps the two autoscalers honest.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plexus-worker
+  labels:
+    app.kubernetes.io/name: plexus
+    app.kubernetes.io/component: worker
+spec:
+  # The ScaledObject owns the replica count from here on; this value only matters
+  # before KEDA adopts the deployment.
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: plexus
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: plexus
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: plexus
+      # Longest lived work runs here. SIGTERM stops claiming new tasks and lets
+      # in-flight handlers finish; an unfinished task is not lost, its lease expires
+      # and another worker re-claims it.
+      terminationGracePeriodSeconds: 300
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: plexus
+              app.kubernetes.io/component: worker
+      containers:
+        - name: worker
+          image: plexus:0.1.0
+          args: ["worker"]
+          envFrom:
+            - configMapRef:
+                name: plexus-config
+            - secretRef:
+                name: plexus-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: home
+              mountPath: /var/lib/plexus
+          resources:
+            requests:
+              cpu: 500m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          # No HTTP probes on purpose: worker liveness is a database fact. A dead
+          # worker stops heartbeating, its lease expires after PLEXUS_TASK_LEASE_S,
+          # and the queue re-offers the task. Restarting a pod that is mid-handler
+          # would only add duplicate at-least-once work.
+      volumes:
+        - name: home
+          emptyDir: {}

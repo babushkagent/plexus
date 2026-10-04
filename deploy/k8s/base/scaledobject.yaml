@@ -1,0 +1,39 @@
+# Backlog, not CPU, is the right signal for a queue consumer: CPU stays flat while a
+# 200k-row embedding backlog waits. One replica per PLEXUS_TARGET_QUEUE_DEPTH ready tasks.
+#
+# Deliberately NOT a `postgres` trigger. KEDA would run its own COUNT(*) on tasks from a
+# connection that declares neither app.tenant_id nor app.worker_scope, and row-level
+# security then matches zero rows: the scaler reports a healthy queue at exactly the
+# moment it is deepest. A definer function cannot rescue it either (the policies are
+# FORCE ROW LEVEL SECURITY), and BYPASSRLS is refused by design -- see
+# store/migrations/postgres/0003_worker_scope.sql. So we scale on the gauge the API
+# publishes from inside a worker-scoped transaction, which is by construction the same
+# number TaskQueue.depth() and the in-process Autoscaler use.
+#
+# max(), not sum(): every API replica exports the same database-wide depth.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: plexus-worker
+  labels:
+    app.kubernetes.io/name: plexus
+    app.kubernetes.io/component: worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: plexus-worker
+  minReplicaCount: 1
+  maxReplicaCount: 50
+  pollingInterval: 30
+  cooldownPeriod: 300
+  triggers:
+    - type: prometheus
+      authModes: bearer
+      metadata:
+        serverAddress: http://prometheus-operated.monitoring:9090
+        metricName: plexus_queue_depth
+        query: max(plexus_queue_depth)
+        threshold: "64"
+      authenticationRef:
+        name: plexus-prometheus-access
