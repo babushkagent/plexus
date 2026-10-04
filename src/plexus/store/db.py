@@ -207,6 +207,18 @@ def _to_dialect_sql(sql: str, dialect: Dialect) -> str:
     return translated
 
 
+# Bookkeeping table for `migrate()`. Declared here, not in a migration file, because it
+# has to exist before the first migration can be recorded. Epochs are BIGINT everywhere:
+# Postgres INTEGER is 32-bit and overflows on a millisecond timestamp.
+SCHEMA_MIGRATIONS_DDL = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    name TEXT PRIMARY KEY,
+    checksum TEXT NOT NULL,
+    applied_at_ms BIGINT NOT NULL
+)
+"""
+
+
 class Database:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -270,13 +282,7 @@ class Database:
         """Apply pending migrations; returns the names applied."""
         conn = self._backend.connection()
         conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-                name TEXT PRIMARY KEY,
-                checksum TEXT NOT NULL,
-                applied_at_ms INTEGER NOT NULL
-            )
-            """
+            SCHEMA_MIGRATIONS_DDL
         )
         if self.dialect is Dialect.POSTGRES:  # pragma: no cover - requires a live server
             conn.execute("SELECT pg_advisory_lock(hashtext('plexus_migrations'))")
