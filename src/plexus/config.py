@@ -122,6 +122,7 @@ class Settings:
     request_timeout_s: float = 60.0
     max_body_bytes: int = 1_048_576
     shutdown_grace_s: float = 30.0
+    console_enabled: bool = True
 
     default_rps: float = 50.0
     default_burst: float = 100.0
@@ -195,6 +196,7 @@ class Settings:
             request_timeout_s=r.number("PLEXUS_REQUEST_TIMEOUT_S", 60.0, problems, low=0.1),
             max_body_bytes=r.integer("PLEXUS_MAX_BODY_BYTES", 1_048_576, problems, minimum=1024),
             shutdown_grace_s=r.number("PLEXUS_SHUTDOWN_GRACE_S", 30.0, problems, low=0.0),
+            console_enabled=r.boolean("PLEXUS_CONSOLE_ENABLED", True),
             default_rps=r.number("PLEXUS_DEFAULT_RPS", 50.0, problems, low=0.001),
             default_burst=r.number("PLEXUS_DEFAULT_BURST", 100.0, problems, low=0.001),
             max_concurrent_per_tenant=r.integer("PLEXUS_MAX_CONCURRENT_PER_TENANT", 32, problems, minimum=1),

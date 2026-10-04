@@ -34,6 +34,7 @@ from ..tenancy.rbac import (
     Capability,
 )
 from ..workflow.engine import TaskQueue
+from .console import CONSOLE_PATHS, console_index
 from .messages import Request, Response, created, no_content, respond, stream_response
 
 if TYPE_CHECKING:  # pragma: no cover - imported for typing only, avoids a cycle
@@ -1069,6 +1070,8 @@ ROUTES: tuple[RouteSpec, ...] = (
     RouteSpec("GET", "/healthz", healthz, public=True),
     RouteSpec("GET", "/readyz", readyz, public=True),
     RouteSpec("GET", "/metrics", metrics, platform=True),
+    # Operator console: inert HTML shell + route manifest (no data without a credential).
+    *[RouteSpec("GET", path, console_index, public=True) for path in CONSOLE_PATHS],
     # Self-service tenant plane
     RouteSpec("GET", "/v1/tenant", get_tenant, Capability.TENANT_READ),
     RouteSpec("PATCH", "/v1/tenant", update_tenant, Capability.TENANT_WRITE),
